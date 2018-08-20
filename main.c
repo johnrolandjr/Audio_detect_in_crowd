@@ -77,8 +77,6 @@ static nrf_saadc_value_t     m_buffer_pool[2][SAMPLES_IN_BUFFER];
 static nrf_ppi_channel_t     m_ppi_channel;
 static uint32_t              m_adc_evt_counter;
 static nrf_drv_pwm_t m_pwm0 = NRF_DRV_PWM_INSTANCE(0);
-volatile int bUpdatePwm = 0;
-volatile nrf_pwm_values_common_t nextVal = 0;
 static nrf_pwm_values_common_t seq_values[] =
 {
     0
@@ -184,12 +182,6 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
         	sum = 0;
         NRF_LOG_RAW_INFO("%d\r\n",sum);
         seq_values[0] = sum * 1000 / EXPECTED_MAX_SUM;
-
-        //if(bUpdatePwm == 0)
-        {
-        	//nextVal = sum * 1000 / EXPECTED_MAX_SUM;
-        	//bUpdatePwm = 1;
-        }
     }
 }
 
