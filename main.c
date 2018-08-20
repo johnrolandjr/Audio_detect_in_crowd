@@ -151,8 +151,8 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
         APP_ERROR_CHECK(err_code);
 
         int i;
-        /* original processing code : prints numbers to console
-         NRF_LOG_INFO("ADC event number: %d\r\n", (int)m_adc_evt_counter);
+        /* Original processing code : prints numbers to console
+        NRF_LOG_INFO("ADC event number: %d\r\n", (int)m_adc_evt_counter);
 
         for (i = 0; i < SAMPLES_IN_BUFFER; i++)
         {
@@ -162,7 +162,7 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
         m_adc_evt_counter++;
         */
 
-        //my processing
+        // My processing
         // calculate average area under the curve,.. if above threshold, then turn led on
         int sum = 0;
         for(i=0; i< (SAMPLES_IN_BUFFER >> 3); i++)
