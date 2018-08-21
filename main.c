@@ -63,7 +63,11 @@
 #include "nrf_pwr_mgmt.h"
 #include "nrf_drv_power.h"
 #include "nrf_drv_pwm.h"
-//#include "nrf_drv_clock.h"
+#include "arm_common_tables.h"
+#include "arm_const_structs.h"
+#include "arm_math.h"
+#include "stage_1_filterbank.h"
+#include "hann.h"
 
 #define NRF_LOG_MODULE_NAME "APP"
 #include "nrf_log.h"
@@ -88,7 +92,12 @@ nrf_pwm_sequence_t const seq =
     .repeats         = 0,
     .end_delay       = 0
 };
-
+arm_rfft_instance_q15  		  RealFFT_Instance;
+arm_cfft_radix4_instance_q15  ComplexFFT_Instance;
+q15_t pFft[SAMPLES_IN_BUFFER<<1];
+q15_t pFftMags[SAMPLES_IN_BUFFER];
+filter1Type * pBassLpf;
+q15_t pFiltered_0[SAMPLES_IN_BUFFER];
 void timer_handler(nrf_timer_event_t event_type, void * p_context)
 {
 
@@ -141,6 +150,7 @@ void saadc_sampling_event_enable(void)
 }
 
 #define EXPECTED_MAX_SUM 2400
+#define EXPECTED_MAX_MAG 512
 void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
 {
     if (p_event->type == NRF_DRV_SAADC_EVT_DONE)
@@ -164,6 +174,7 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
 
         // My processing
         // calculate average area under the curve,.. if above threshold, then turn led on
+        /*
         int sum = 0;
         for(i=0; i< (SAMPLES_IN_BUFFER >> 3); i++)
         {
@@ -182,6 +193,48 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
         	sum = 0;
         NRF_LOG_RAW_INFO("%d\r\n",sum);
         seq_values[0] = sum * 1000 / EXPECTED_MAX_SUM;
+        */
+
+        /*
+         * Process #2: Using the FFT of the audio samples
+         */
+        //STAGE 1: FILTERBANK
+        filter1_filterBlock( pBassLpf, p_event->data.done.p_buffer, pFiltered_0, SAMPLES_IN_BUFFER );
+
+        //1. Convert Real Data into Q15 format (if not already done)
+
+        //1b. apply hanning window on samples
+        for(int a = 0; a < SAMPLES_IN_BUFFER; a++)
+        {
+        	pFiltered_0[a] = ((q31_t)pFiltered_0[a] * Hann[a]) >> 16;
+        }
+
+        //2. Compute FFT
+        arm_rfft_q15(	&RealFFT_Instance,
+						(q15_t *)pFiltered_0,
+						(q15_t *)pFft);
+		//3. Upscale based on size and FFT function used
+		for(int i=0; i < SAMPLES_IN_BUFFER<<1; i++)
+		{
+			pFft[i] <<=8;
+		}
+		//4. Compute Magnitudes of bins
+		arm_cmplx_mag_q15(	(q15_t *)pFft,
+							(q15_t *)pFftMags,
+							SAMPLES_IN_BUFFER);
+		for(int a = 0; a < 256; a++)
+		{
+			if(pFftMags[a] <= 255)
+				pFftMags[a] = 0;
+			else
+				pFftMags[a] -= 255;
+		}
+
+		int scan_i = 12;
+		NRF_LOG_RAW_INFO("%d\t%d\t%d\t%d\t", pFftMags[scan_i], pFftMags[scan_i+1], pFftMags[scan_i+2], pFftMags[scan_i+3]);
+		NRF_LOG_RAW_INFO("%d\t%d\t%d\t%d\r\n", pFftMags[scan_i+4], pFftMags[scan_i+5], pFftMags[scan_i+6], pFftMags[scan_i+7]);
+
+
     }
 }
 
@@ -230,6 +283,17 @@ void led_pwm_init(void)
 	nrf_drv_pwm_simple_playback(&m_pwm0, &seq, 3, NRF_DRV_PWM_FLAG_LOOP);
 }
 
+void dsp_init(void)
+{
+	//set up CMSIS FFT structures
+	arm_rfft_init_q15(	&RealFFT_Instance,
+						SAMPLES_IN_BUFFER,
+						0,
+						1);
+
+	pBassLpf = filter1_create();
+}
+
 /**
  * @brief Function for main application entry.
  */
@@ -251,6 +315,9 @@ int main(void)
 
     //Initialize the PWM
     led_pwm_init();
+
+    //Init DSP Units
+    dsp_init();
 
     while (1)
     {
