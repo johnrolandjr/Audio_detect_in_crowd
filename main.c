@@ -179,6 +179,8 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
     }
 }
 
+#define MAX_RMS 400
+#define MIN_THRESH_RMS 50
 void processData(void)
 {
 	/*
@@ -198,14 +200,24 @@ void processData(void)
 	for(int i=0; i<SAMPLES_IN_BUFFER; i++)
 	{
 		pFiltered_0[i] -= avg;
-		if(pFiltered_0[i] < 0)
-			pFiltered_0[i] *= -1;
+		//Commenting out Rectification because we are going to perform rms on data instead
+        //if(pFiltered_0[i] < 0)
+		//	pFiltered_0[i] *= -1;
 	}
 	//chart_data(pFiltered_0, SAMPLES_IN_BUFFER);
 
-	//Stage 3: calculate energy under curve and above threshold
-	int value = evelop_extractor(pFiltered_0,SAMPLES_IN_BUFFER);
-	seq_values[0] = value;
+	//Stage 3: calculate energy (SPL) via RMS
+    q15_t rms=0;
+    int loudness=0;
+    arm_rms_q15(pFiltered_0, SAMPLES_IN_BUFFER, &rms);
+    NRF_LOG_RAW_INFO("%d\r\n", rms);
+    rms -= MIN_THRESH_RMS;
+	if(rms > MAX_RMS)
+		loudness = 10000;
+	else
+		loudness = sumOverthreshold * 10000 / MAX_RMS;
+	//int value = evelop_extractor(pFiltered_0,SAMPLES_IN_BUFFER);
+	seq_values[0] = loudness;
 }
 
 void saadc_init(void)
