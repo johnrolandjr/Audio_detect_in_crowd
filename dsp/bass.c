@@ -1,9 +1,3 @@
-/*
- * stage_1_filterbank.c
- *
- *  Created on: Aug 20, 2018
- *      Author: Beau
- */
 /******************************* SOURCE LICENSE *********************************
 Copyright (c) 2018 MicroModeler.
 
@@ -19,55 +13,56 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
 // A commercial license for MicroModeler DSP can be obtained at http://www.micromodeler.com/launch.jsp
 
-#include "stage_1_filterbank.h"
+#include "bass.h"
 
 #include <stdlib.h> // For malloc/free
 #include <string.h> // For memset
 
-q15_t filter1_coefficients[12] =
+q15_t bass_coefficients[12] =
 {
 // Scaled for a 16x16:32 Direct form 1 IIR filter with:
 // Feedback shift = 14
 // Output shift = 14
 // Input  has a maximum value of 1, scaled by 2^15
-// Output has a maximum value of 1.6997154508031926, scaled by 2^14
+// Output has a maximum value of 1.6698209558014798, scaled by 2^14
 
-    43, 0, 87, 43, 29353, -13174,// b0 Q13(0.00531), 0, b1 Q13(0.0106), b2 Q13(0.00531), a1 Q14(1.79), a2 Q14(-0.804)
-    32, 0, 64, 32, 31140, -14974// b0 Q14(0.00195), 0, b1 Q14(0.00391), b2 Q14(0.00195), a1 Q14(1.90), a2 Q14(-0.914)
+    7, 0, 14, 7, 31642, -15294,// b0 Q13(0.000883), 0, b1 Q13(0.00177), b2 Q13(0.000883), a1 Q14(1.93), a2 Q14(-0.933)
+    8, 0, 16, 8, 32201, -15924// b0 Q13(0.000977), 0, b1 Q13(0.00195), b2 Q13(0.000977), a1 Q14(1.97), a2 Q14(-0.972)
 
 };
 
 
-filter1Type *filter1_create( void )
+bassType *bass_create( void )
 {
-	filter1Type *result = (filter1Type *)malloc( sizeof( filter1Type ) );	// Allocate memory for the object
-	filter1_init( result );											// Initialize it
+	bassType *result = (bassType *)malloc( sizeof( bassType ) );	// Allocate memory for the object
+	bass_init( result );											// Initialize it
 	return result;																// Return the result
 }
 
-void filter1_destroy( filter1Type *pObject )
+void bass_destroy( bassType *pObject )
 {
 	free( pObject );
 }
 
- void filter1_init( filter1Type * pThis )
+ void bass_init( bassType * pThis )
 {
-	arm_biquad_cascade_df1_init_q15(	&pThis->instance, filter1_numStages, filter1_coefficients, pThis->state, filter1_postShift );
-	filter1_reset( pThis );
+	arm_biquad_cascade_df1_init_q15(	&pThis->instance, bass_numStages, bass_coefficients, pThis->state, bass_postShift );
+	bass_reset( pThis );
 
 }
 
- void filter1_reset( filter1Type * pThis )
+ void bass_reset( bassType * pThis )
 {
 	memset( &pThis->state, 0, sizeof( pThis->state ) ); // Reset state to 0
 	pThis->output = 0;									// Reset output
 
 }
 
- int filter1_filterBlock( filter1Type * pThis, short * pInput, short * pOutput, unsigned int count )
+ int bass_filterBlock( bassType * pThis, short * pInput, short * pOutput, unsigned int count )
 {
 	arm_biquad_cascade_df1_fast_q15( &pThis->instance, pInput, pOutput, count );
 	return count;
 
 }
+
 

@@ -48,6 +48,7 @@
  * @image html example_board_setup_a.jpg "Use board setup A for this example."
  */
 
+#include <bass.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -66,8 +67,11 @@
 #include "arm_common_tables.h"
 #include "arm_const_structs.h"
 #include "arm_math.h"
-#include "stage_1_filterbank.h"
 #include "hann.h"
+#include "envelope_extractor.h"
+#include "processing_debug.h"
+#include "nrf_mtx.h"
+#include "bass_fir.h"
 
 #define NRF_LOG_MODULE_NAME "APP"
 #include "nrf_log.h"
@@ -94,17 +98,22 @@ nrf_pwm_sequence_t const seq =
 };
 arm_rfft_instance_q15  		  RealFFT_Instance;
 arm_cfft_radix4_instance_q15  ComplexFFT_Instance;
-q15_t pFft[SAMPLES_IN_BUFFER<<1];
-q15_t pFftMags[SAMPLES_IN_BUFFER];
-filter1Type * pBassLpf;
-q15_t pFiltered_0[SAMPLES_IN_BUFFER];
+//q15_t pFft[SAMPLES_IN_BUFFER<<1];
+//q15_t pFftMags[SAMPLES_IN_BUFFER];
+bassType * pBassLpf;
+static nrf_mtx_t mtx;
+
+#define EXPECTED_MAX_SUM 2400
+#define EXPECTED_MAX_MAG 512
+volatile int bProcessing = 0;
+q15_t processInput[SAMPLES_IN_BUFFER];
+volatile q15_t pFiltered_0[SAMPLES_IN_BUFFER];
 void timer_handler(nrf_timer_event_t event_type, void * p_context)
 {
 
 }
 
 #define SAMPLE_PERIOD_US 63 // 63US Period = 15873 Hz
-#define SAMPLE_PERIOD_SLOW_US 10000
 
 void saadc_sampling_event_init(void)
 {
@@ -141,7 +150,6 @@ void saadc_sampling_event_init(void)
     APP_ERROR_CHECK(err_code);
 }
 
-
 void saadc_sampling_event_enable(void)
 {
     ret_code_t err_code = nrf_drv_ppi_channel_enable(m_ppi_channel);
@@ -149,8 +157,6 @@ void saadc_sampling_event_enable(void)
     APP_ERROR_CHECK(err_code);
 }
 
-#define EXPECTED_MAX_SUM 2400
-#define EXPECTED_MAX_MAG 512
 void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
 {
     if (p_event->type == NRF_DRV_SAADC_EVT_DONE)
@@ -160,84 +166,47 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
         err_code = nrf_drv_saadc_buffer_convert(p_event->data.done.p_buffer, SAMPLES_IN_BUFFER);
         APP_ERROR_CHECK(err_code);
 
-        int i;
-        /* Original processing code : prints numbers to console
-        NRF_LOG_INFO("ADC event number: %d\r\n", (int)m_adc_evt_counter);
-
-        for (i = 0; i < SAMPLES_IN_BUFFER; i++)
+        if(nrf_mtx_trylock(&mtx))
         {
-        	NRF_LOG_RAW_INFO("%d\r\n", p_event->data.done.p_buffer[i]);
+			//copy data into processing buffer
+			for(int i=0; i < SAMPLES_IN_BUFFER; i++)
+			{
+				processInput[i] = (q15_t) (p_event->data.done.p_buffer[i]);
+			}
+			bProcessing = 1;
+			nrf_mtx_unlock(&mtx);
         }
-
-        m_adc_evt_counter++;
-        */
-
-        // My processing
-        // calculate average area under the curve,.. if above threshold, then turn led on
-        /*
-        int sum = 0;
-        for(i=0; i< (SAMPLES_IN_BUFFER >> 3); i++)
-        {
-        	int temp=0;
-        	for(int j=0; j < 8; j++){
-        		if((nrf_saadc_value_t) (p_event->data.done.p_buffer[(i<<3) + j]) >= 0)
-        			temp += (nrf_saadc_value_t) (p_event->data.done.p_buffer[(i<<3) + j]);
-        		else
-        			temp -= (nrf_saadc_value_t) (p_event->data.done.p_buffer[(i<<3) + j]);
-        	}
-        	sum += temp>>3;
-        }
-        sum >>= 2;
-        sum -= 500;
-        if(sum < 0)
-        	sum = 0;
-        NRF_LOG_RAW_INFO("%d\r\n",sum);
-        seq_values[0] = sum * 1000 / EXPECTED_MAX_SUM;
-        */
-
-        /*
-         * Process #2: Using the FFT of the audio samples
-         */
-        //STAGE 1: FILTERBANK
-        filter1_filterBlock( pBassLpf, p_event->data.done.p_buffer, pFiltered_0, SAMPLES_IN_BUFFER );
-
-        //1. Convert Real Data into Q15 format (if not already done)
-
-        //1b. apply hanning window on samples
-        for(int a = 0; a < SAMPLES_IN_BUFFER; a++)
-        {
-        	pFiltered_0[a] = ((q31_t)pFiltered_0[a] * Hann[a]) >> 16;
-        }
-
-        //2. Compute FFT
-        arm_rfft_q15(	&RealFFT_Instance,
-						(q15_t *)pFiltered_0,
-						(q15_t *)pFft);
-		//3. Upscale based on size and FFT function used
-		for(int i=0; i < SAMPLES_IN_BUFFER<<1; i++)
-		{
-			pFft[i] <<=8;
-		}
-		//4. Compute Magnitudes of bins
-		arm_cmplx_mag_q15(	(q15_t *)pFft,
-							(q15_t *)pFftMags,
-							SAMPLES_IN_BUFFER);
-		for(int a = 0; a < 256; a++)
-		{
-			if(pFftMags[a] <= 255)
-				pFftMags[a] = 0;
-			else
-				pFftMags[a] -= 255;
-		}
-
-		int scan_i = 12;
-		NRF_LOG_RAW_INFO("%d\t%d\t%d\t%d\t", pFftMags[scan_i], pFftMags[scan_i+1], pFftMags[scan_i+2], pFftMags[scan_i+3]);
-		NRF_LOG_RAW_INFO("%d\t%d\t%d\t%d\r\n", pFftMags[scan_i+4], pFftMags[scan_i+5], pFftMags[scan_i+6], pFftMags[scan_i+7]);
-
-
     }
 }
 
+void processData(void)
+{
+	/*
+	 * Process #2: Filter -> Full-Wave Rectify -> Envelope -> Sum Threshold
+	 */
+
+	//STAGE 1: FILTERBANK
+	bassFir_filterBlock( processInput, pFiltered_0, SAMPLES_IN_BUFFER );
+
+	//Stage 2: remove DC Offset and Full-Wave Rectify
+	int avg = 0;
+	for(int i=0; i<SAMPLES_IN_BUFFER; i++)
+	{
+		avg += (int)pFiltered_0[i];
+	}
+	avg >>= 9;
+	for(int i=0; i<SAMPLES_IN_BUFFER; i++)
+	{
+		pFiltered_0[i] -= avg;
+		if(pFiltered_0[i] < 0)
+			pFiltered_0[i] *= -1;
+	}
+	//chart_data(pFiltered_0, SAMPLES_IN_BUFFER);
+
+	//Stage 3: calculate energy under curve and above threshold
+	int value = evelop_extractor(pFiltered_0,SAMPLES_IN_BUFFER);
+	seq_values[0] = value;
+}
 
 void saadc_init(void)
 {
@@ -257,6 +226,9 @@ void saadc_init(void)
     err_code = nrf_drv_saadc_buffer_convert(m_buffer_pool[1], SAMPLES_IN_BUFFER);
     APP_ERROR_CHECK(err_code);
 
+    //prepare mutex that it will share with foreground
+    nrf_mtx_init(&mtx);
+
 }
 
 void led_pwm_init(void)
@@ -273,7 +245,7 @@ void led_pwm_init(void)
 		.irq_priority = APP_IRQ_PRIORITY_LOWEST,
 		.base_clock   = NRF_PWM_CLK_1MHz,
 		.count_mode   = NRF_PWM_MODE_UP,
-		.top_value    = 1000,
+		.top_value    = 10000,
 		.load_mode    = NRF_PWM_LOAD_COMMON,
 		.step_mode    = NRF_PWM_STEP_AUTO
 	};
@@ -285,13 +257,7 @@ void led_pwm_init(void)
 
 void dsp_init(void)
 {
-	//set up CMSIS FFT structures
-	arm_rfft_init_q15(	&RealFFT_Instance,
-						SAMPLES_IN_BUFFER,
-						0,
-						1);
-
-	pBassLpf = filter1_create();
+	initBassFir();
 }
 
 /**
@@ -301,12 +267,6 @@ int main(void)
 {
     uint32_t err_code = NRF_LOG_INIT(NULL);
     APP_ERROR_CHECK(err_code);
-
-    err_code = nrf_drv_power_init(NULL);
-    APP_ERROR_CHECK(err_code);
-
-    ret_code_t ret_code = nrf_pwr_mgmt_init();
-    APP_ERROR_CHECK(ret_code);
 
     //NRF_LOG_INFO("SAADC HAL simple example.\r\n");
     saadc_init();
@@ -319,9 +279,30 @@ int main(void)
     //Init DSP Units
     dsp_init();
 
+    //init debug light
+    /*
+    NRF_GPIO->OUTCLR = 1<<LED_2;
+    NRF_GPIO->PIN_CNF[LED_2] = ((uint32_t)GPIO_PIN_CNF_DIR_Output << GPIO_PIN_CNF_DIR_Pos)
+                                   | ((uint32_t)GPIO_PIN_CNF_INPUT_Disconnect << GPIO_PIN_CNF_INPUT_Pos)
+                                   | ((uint32_t)GPIO_PIN_CNF_PULL_Disabled << GPIO_PIN_CNF_PULL_Pos)
+                                   | ((uint32_t)GPIO_PIN_CNF_DRIVE_S0S1 << GPIO_PIN_CNF_DRIVE_Pos)
+                                   | ((uint32_t)GPIO_PIN_CNF_SENSE_Disabled << GPIO_PIN_CNF_SENSE_Pos);
+     */
+
     while (1)
     {
-        nrf_pwr_mgmt_run();
+    	if(nrf_mtx_trylock(&mtx))
+    	{
+			if(bProcessing != 0)
+			{
+				//NRF_GPIO->OUTSET = 1<<LED_2;
+				// PROCESS TIME TAKES 3.7ms, at 512 samples @16kHz, thats a span of 33ms, we are good on processing time :)
+				processData();
+				//NRF_GPIO->OUTCLR = 1<<LED_2;
+				bProcessing = 0;
+			}
+			nrf_mtx_unlock(&mtx);
+    	}
         NRF_LOG_FLUSH();
     }
 }
