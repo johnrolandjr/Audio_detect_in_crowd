@@ -48,7 +48,6 @@
  * @image html example_board_setup_a.jpg "Use board setup A for this example."
  */
 
-#include <bass.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -68,10 +67,10 @@
 #include "arm_const_structs.h"
 #include "arm_math.h"
 #include "hann.h"
-#include "envelope_extractor.h"
 #include "processing_debug.h"
 #include "nrf_mtx.h"
 #include "bass_fir.h"
+#include "math.h"
 
 #define NRF_LOG_MODULE_NAME "APP"
 #include "nrf_log.h"
@@ -96,18 +95,11 @@ nrf_pwm_sequence_t const seq =
     .repeats         = 0,
     .end_delay       = 0
 };
-arm_rfft_instance_q15  		  RealFFT_Instance;
-arm_cfft_radix4_instance_q15  ComplexFFT_Instance;
-//q15_t pFft[SAMPLES_IN_BUFFER<<1];
-//q15_t pFftMags[SAMPLES_IN_BUFFER];
-bassType * pBassLpf;
-static nrf_mtx_t mtx;
 
-#define EXPECTED_MAX_SUM 2400
-#define EXPECTED_MAX_MAG 512
+static nrf_mtx_t mtx;
 volatile int bProcessing = 0;
 q15_t processInput[SAMPLES_IN_BUFFER];
-volatile q15_t pFiltered_0[SAMPLES_IN_BUFFER];
+q15_t pFiltered_0[SAMPLES_IN_BUFFER];
 void timer_handler(nrf_timer_event_t event_type, void * p_context)
 {
 
@@ -179,19 +171,20 @@ void saadc_callback(nrf_drv_saadc_evt_t const * p_event)
     }
 }
 
-#define MAX_RMS 400
-#define MIN_THRESH_RMS 50
+#define MAX_RMS 150
+#define MIN_THRESH_RMS 50 //15
 void processData(void)
 {
 	/*
-	 * Process #2: Filter -> Full-Wave Rectify -> Envelope -> Sum Threshold
+	 * Process: Filter -> Remove DC Offset -> RMS -> led brightness
 	 */
 
-	//STAGE 1: FILTERBANK
+	//STAGE 1: FILTER
 	bassFir_filterBlock( processInput, pFiltered_0, SAMPLES_IN_BUFFER );
 
-	//Stage 2: remove DC Offset and Full-Wave Rectify
+	//Stage 2: Remove DC Offset / rmS - Square input for RMS
 	int avg = 0;
+	int squares[SAMPLES_IN_BUFFER];
 	for(int i=0; i<SAMPLES_IN_BUFFER; i++)
 	{
 		avg += (int)pFiltered_0[i];
@@ -200,23 +193,37 @@ void processData(void)
 	for(int i=0; i<SAMPLES_IN_BUFFER; i++)
 	{
 		pFiltered_0[i] -= avg;
-		//Commenting out Rectification because we are going to perform rms on data instead
-        //if(pFiltered_0[i] < 0)
-		//	pFiltered_0[i] *= -1;
+
+		squares[i] = ((q31_t)pFiltered_0[i]) * (q31_t)pFiltered_0[i];
 	}
+
+	//used to look at the data on processing 3.0
 	//chart_data(pFiltered_0, SAMPLES_IN_BUFFER);
 
-	//Stage 3: calculate energy (SPL) via RMS
-    q15_t rms=0;
+	//Stage 3: Calculate energy (SPL) via RMS
+    int rms=0;
     int loudness=0;
-    arm_rms_q15(pFiltered_0, SAMPLES_IN_BUFFER, &rms);
-    NRF_LOG_RAW_INFO("%d\r\n", rms);
+
+    //rMs - Mean
+    avg=0;
+    for(int i=0; i< SAMPLES_IN_BUFFER; i++)
+    {
+    	avg += squares[i];
+    }
+    avg >>= 9;
+
+    //Rms - Root
+    rms = (int) sqrt((double) avg);
+
+    //Stage 4: Led Brightness
     rms -= MIN_THRESH_RMS;
-	if(rms > MAX_RMS)
-		loudness = 10000;
-	else
-		loudness = sumOverthreshold * 10000 / MAX_RMS;
-	//int value = evelop_extractor(pFiltered_0,SAMPLES_IN_BUFFER);
+    if(rms > 0)
+    {
+		if(rms > MAX_RMS)
+			loudness = 10000;
+		else
+			loudness = rms * 10000 / MAX_RMS;
+    }
 	seq_values[0] = loudness;
 }
 
@@ -275,6 +282,7 @@ void dsp_init(void)
 /**
  * @brief Function for main application entry.
  */
+//#define ENABLE_DEBUG_TIME_LED
 int main(void)
 {
     uint32_t err_code = NRF_LOG_INIT(NULL);
@@ -292,14 +300,14 @@ int main(void)
     dsp_init();
 
     //init debug light
-    /*
+#ifdef ENABLE_DEBUG_TIME_LED
     NRF_GPIO->OUTCLR = 1<<LED_2;
     NRF_GPIO->PIN_CNF[LED_2] = ((uint32_t)GPIO_PIN_CNF_DIR_Output << GPIO_PIN_CNF_DIR_Pos)
                                    | ((uint32_t)GPIO_PIN_CNF_INPUT_Disconnect << GPIO_PIN_CNF_INPUT_Pos)
                                    | ((uint32_t)GPIO_PIN_CNF_PULL_Disabled << GPIO_PIN_CNF_PULL_Pos)
                                    | ((uint32_t)GPIO_PIN_CNF_DRIVE_S0S1 << GPIO_PIN_CNF_DRIVE_Pos)
                                    | ((uint32_t)GPIO_PIN_CNF_SENSE_Disabled << GPIO_PIN_CNF_SENSE_Pos);
-     */
+#endif
 
     while (1)
     {
@@ -307,10 +315,14 @@ int main(void)
     	{
 			if(bProcessing != 0)
 			{
-				//NRF_GPIO->OUTSET = 1<<LED_2;
-				// PROCESS TIME TAKES 3.7ms, at 512 samples @16kHz, thats a span of 33ms, we are good on processing time :)
+#ifdef ENABLE_DEBUG_TIME_LED
+				NRF_GPIO->OUTSET = 1<<LED_2;
+#endif
+				// PROCESS TIME TAKES 2.53ms, at 512 samples @16kHz, thats a span of 33ms, we are good on processing time :)
 				processData();
-				//NRF_GPIO->OUTCLR = 1<<LED_2;
+#ifdef ENABLE_DEBUG_TIME_LED
+				NRF_GPIO->OUTCLR = 1<<LED_2;
+#endif
 				bProcessing = 0;
 			}
 			nrf_mtx_unlock(&mtx);

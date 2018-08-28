@@ -7,7 +7,7 @@
 
 #include "processing_debug.h"
 
-#define SLOWER_FACTOR_RATE 0
+#define SLOWER_FACTOR_RATE 4
 void chart_data(q15_t * pData, int size)
 {
 	static int slowCnt = SLOWER_FACTOR_RATE;
